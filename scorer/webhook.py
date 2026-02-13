@@ -23,9 +23,13 @@ logger = logging.getLogger(__name__)
 
 _FIELD_DEFAULTS: dict[str, Any] = {
     "title": "Sans titre",
+    "slug": "N/A",
     "score": 0,
+    "score_pass1": 0,
+    "score_pass2": 0,
     "montant": 0.0,
     "price": 0.0,
+    "gain_potentiel": 0.0,
     "wallet": "0x0",
     "condition_id": "N/A",
     "transaction_hash": "N/A",
@@ -34,7 +38,7 @@ _FIELD_DEFAULTS: dict[str, Any] = {
     "market_end_date": "",
     "ingested_at": "",
     "side": "N/A",
-    "flags": [],
+    "flags": "",
     "flags_detail": "",
     "age_days": "inconnu",
     "tx_count": 0,
@@ -75,18 +79,34 @@ def build_flat_payload(
         flags_detail_parts.append(f"{flag}: {evidence}")
     flags_detail_str = "\n".join(flags_detail_parts)
 
+    # Convert flags list → comma-separated string (Make IML needs flat strings)
+    flags_list = scoring_result.flags_triggered or []
+    flags_str = ", ".join(flags_list) if flags_list else _FIELD_DEFAULTS["flags"]
+
     # Convert age_days (int | None) → human-readable string
     age_raw = wallet_profile.get("age_days")
-    if age_raw is not None:
+    if age_raw is not None and age_raw != "non_disponible":
         age_days = f"{age_raw} jours"
     else:
         age_days = _FIELD_DEFAULTS["age_days"]
 
+    # Compute gain_potentiel: usdc_size × (1/price − 1)
+    price = trade.get("price") or 0
+    usdc_size = trade.get("usdc_size") or 0
+    if price > 0:
+        gain_potentiel = round(usdc_size * (1.0 / price - 1.0), 2)
+    else:
+        gain_potentiel = 0.0
+
     payload: dict[str, Any] = {
         "title": _safe(trade.get("title"), _FIELD_DEFAULTS["title"]),
+        "slug": _safe(trade.get("slug"), _FIELD_DEFAULTS["slug"]),
         "score": _safe(scoring_result.score_total, _FIELD_DEFAULTS["score"]),
+        "score_pass1": _safe(scoring_result.score_pass1, _FIELD_DEFAULTS["score_pass1"]),
+        "score_pass2": _safe(scoring_result.score_pass2, _FIELD_DEFAULTS["score_pass2"]),
         "montant": _safe(trade.get("usdc_size"), _FIELD_DEFAULTS["montant"]),
         "price": _safe(trade.get("price"), _FIELD_DEFAULTS["price"]),
+        "gain_potentiel": gain_potentiel,
         "wallet": _safe(trade.get("proxy_wallet"), _FIELD_DEFAULTS["wallet"]),
         "condition_id": _safe(trade.get("condition_id"), _FIELD_DEFAULTS["condition_id"]),
         "transaction_hash": _safe(trade.get("transaction_hash"), _FIELD_DEFAULTS["transaction_hash"]),
@@ -95,7 +115,7 @@ def build_flat_payload(
         "market_end_date": _safe(trade.get("market_end_date"), _FIELD_DEFAULTS["market_end_date"]),
         "ingested_at": _safe(trade.get("ingested_at"), _FIELD_DEFAULTS["ingested_at"]),
         "side": _safe(trade.get("side"), _FIELD_DEFAULTS["side"]),
-        "flags": _safe(scoring_result.flags_triggered, _FIELD_DEFAULTS["flags"]),
+        "flags": flags_str,
         "flags_detail": flags_detail_str if flags_detail_str else _FIELD_DEFAULTS["flags_detail"],
         "age_days": age_days,
         "tx_count": _safe(wallet_profile.get("tx_count"), _FIELD_DEFAULTS["tx_count"]),
