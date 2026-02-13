@@ -1,0 +1,25 @@
+[Unit]
+Description=Carmin — Polymarket Insider Detection Bot
+After=network.target
+
+[Service]
+User=carmin
+WorkingDirectory=/home/carmin
+ExecStart=/home/carmin/venv/bin/python run.py
+Restart=on-failure
+RestartSec=60
+EnvironmentFile=/home/carmin/.env
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=carmin
+
+# Security hardening
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ReadWritePaths=/home/carmin/data
+
+[Install]
+WantedBy=multi-user.target
