@@ -16,7 +16,7 @@ from typing import Any
 from scorer.config import PASS1_THRESHOLD, PASS2_THRESHOLD
 from scorer.profiler import build_wallet_profile
 from scorer.scoring import ScoringResult, score_pass1, score_pass2
-from scorer.webhook import send_webhook
+from scorer.webhook import build_flat_payload, send_webhook
 
 logger = logging.getLogger(__name__)
 
@@ -138,19 +138,9 @@ def _build_payload(
 ) -> dict[str, Any]:
     """Build the webhook payload for a suspect trade.
 
-    Matches the format specified in the ticket for Bloc 3 consumption.
+    Returns a flat, null-safe payload for Make.com consumption.
     """
-    return {
-        "trade": trade,
-        "scoring": {
-            "score_total": result.score_total,
-            "score_pass1": result.score_pass1,
-            "score_pass2": result.score_pass2,
-            "flags_triggered": result.flags_triggered,
-            "flags_detail": result.flags_detail,
-        },
-        "wallet_profile": wallet_profile,
-    }
+    return build_flat_payload(trade, result, wallet_profile)
 
 
 # ── Standalone test (Maduro case) ────────────────────────────
@@ -223,9 +213,9 @@ def _run_maduro_test() -> None:
     print(f"  All flags: {result.flags_triggered}")
     print()
 
-    # Build payload
+    # Build payload (flat, null-safe)
     payload = _build_payload(trade, result, wallet_profile)
-    print("Webhook payload:")
+    print("Webhook payload (flat format):")
     print(json.dumps(payload, indent=2, ensure_ascii=False))
 
     # Verify criteria
@@ -242,6 +232,14 @@ def _run_maduro_test() -> None:
     assert "wallet_neuf" in result.flags_triggered
     assert "mise_massive" in result.flags_triggered or "marché_improbable" in result.flags_triggered
     print("  Key flags present: PASS")
+
+    # Verify flat payload: no nested dicts, no null values
+    payload_json = json.dumps(payload)
+    assert "null" not in payload_json, f"Payload contains null: {payload_json}"
+    print("  No null in payload: PASS")
+    for key, val in payload.items():
+        assert not isinstance(val, dict), f"Payload key '{key}' is nested dict"
+    print("  No nested objects: PASS")
     print()
     print("All Maduro test assertions passed!")
 

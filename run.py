@@ -28,7 +28,7 @@ from ingestor.enrichment import clear_market_cache, enrich_trade
 from scorer.config import MAKE_WEBHOOK_URL, PASS1_THRESHOLD, PASS2_THRESHOLD
 from scorer.main import process_enriched_trades
 from scorer.scoring import score_pass1, score_trade
-from scorer.webhook import send_webhook
+from scorer.webhook import build_flat_payload, send_webhook
 
 logger = logging.getLogger("carmin")
 
@@ -75,24 +75,16 @@ def mode_test_webhook() -> None:
         print("Set it before running --test-webhook")
         sys.exit(1)
 
-    # Build full scored payload
+    # Build full scored payload (flat, null-safe format for Make.com)
     result = score_trade(MADURO_TRADE, MADURO_WALLET_PROFILE)
-
-    payload = {
-        "trade": MADURO_TRADE,
-        "scoring": {
-            "score_total": result.score_total,
-            "score_pass1": result.score_pass1,
-            "score_pass2": result.score_pass2,
-            "flags_triggered": result.flags_triggered,
-            "flags_detail": result.flags_detail,
-        },
-        "wallet_profile": MADURO_WALLET_PROFILE,
-    }
+    payload = build_flat_payload(MADURO_TRADE, result, MADURO_WALLET_PROFILE)
 
     print(f"Payload score: {result.score_total} pts (P1: {result.score_pass1}, P2: {result.score_pass2})")
     print(f"Flags: {result.flags_triggered}")
     print(f"Webhook URL: {MAKE_WEBHOOK_URL[:50]}...")
+    print()
+    print("Payload (flat format):")
+    print(json.dumps(payload, indent=2, ensure_ascii=False))
     print()
     print("Sending...")
 
