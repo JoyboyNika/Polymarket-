@@ -109,13 +109,13 @@ def run_cycle(tracker: DedupTracker) -> list[dict[str, Any]]:
 def process_trades(trades: list[dict[str, Any]]) -> None:
     """Pass enriched trades to Bloc 2 (Scoreur).
 
-    Currently a placeholder — Bloc 2 will consume this list directly.
-
     Args:
         trades: List of enriched trade dicts.
     """
-    # TODO: Replace with Bloc 2 scoring call when implemented
-    logger.info("Passing %d trades to Bloc 2 (not yet implemented)", len(trades))
+    from scorer.main import process_enriched_trades
+
+    logger.info("Passing %d trades to Bloc 2 (Scoreur)", len(trades))
+    process_enriched_trades(trades)
 
 
 def main() -> None:

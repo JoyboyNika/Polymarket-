@@ -13,6 +13,9 @@ env/
 # Environment
 .env
 
+# Webhook fallback data
+data/
+
 # IDE
 .vscode/
 .idea/
