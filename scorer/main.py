@@ -11,9 +11,17 @@ Usage (standalone test):
 
 import json
 import logging
+import re
 from typing import Any
 
-from scorer.config import PASS1_THRESHOLD, PASS2_THRESHOLD
+from scorer.config import (
+    BOT_MARKETS_THRESHOLD,
+    BOT_WIN_RATE_THRESHOLD,
+    MIN_GAIN_POTENTIEL,
+    PASS1_THRESHOLD,
+    PASS2_THRESHOLD,
+    PUBLIC_RESOLUTION_PATTERNS,
+)
 from scorer.profiler import build_wallet_profile
 from scorer.scoring import ScoringResult, score_pass1, score_pass2
 from scorer.webhook import build_flat_payload, send_webhook
@@ -57,15 +65,87 @@ def process_enriched_trades(trades: list[dict[str, Any]]) -> list[dict[str, Any]
     return suspects
 
 
+def _compute_gain_potentiel(trade: dict[str, Any]) -> float:
+    """Compute potential gain: usdc_size × (1/price − 1)."""
+    price = trade.get("price") or 0
+    usdc_size = trade.get("usdc_size") or 0
+    if price > 0:
+        return usdc_size * (1.0 / price - 1.0)
+    return 0.0
+
+
+def _is_public_resolution_market(trade: dict[str, Any]) -> bool:
+    """Check if market has publicly observable resolution (price feeds, etc.)."""
+    slug = (trade.get("slug") or "").lower()
+    title = (trade.get("title") or "").lower()
+    text = f"{slug} {title}"
+    return any(pattern in text for pattern in PUBLIC_RESOLUTION_PATTERNS)
+
+
+def _parse_win_rate(win_loss: str | None) -> float | None:
+    """Parse win rate from 'XW/YL' string. Returns None if unparseable."""
+    if not win_loss:
+        return None
+    match = re.match(r"(\d+)W/(\d+)L", win_loss)
+    if not match:
+        return None
+    wins = int(match.group(1))
+    losses = int(match.group(2))
+    total = wins + losses
+    if total == 0:
+        return None
+    return wins / total
+
+
+def _is_bot_arbitrageur(wallet_profile: dict[str, Any]) -> bool:
+    """Check if wallet profile matches bot/arbitrageur pattern.
+
+    Criteria: markets_count > 30 AND win_rate > 80%.
+    """
+    markets_count = wallet_profile.get("markets_count") or 0
+    if markets_count <= BOT_MARKETS_THRESHOLD:
+        return False
+    win_rate = _parse_win_rate(wallet_profile.get("win_loss"))
+    if win_rate is None:
+        return False
+    return win_rate > BOT_WIN_RATE_THRESHOLD
+
+
 def _process_single_trade(trade: dict[str, Any]) -> dict[str, Any] | None:
     """Process a single trade through the full scoring pipeline.
+
+    Pipeline order (Ticket #8):
+    1. Entry filter: gain potentiel minimum ($500)
+    2. Entry filter: public resolution market
+    3. Pass 1 scoring (trade + market)
+    4. If Pass 1 >= threshold: profile wallet
+    5. Entry filter: bot/arbitrageur (needs wallet data)
+    6. Pass 2 scoring (wallet characteristics)
+    7. If total >= threshold: build payload + send webhook
 
     Returns:
         Suspect payload dict if the trade is suspect, None otherwise.
     """
     tx_hash = trade.get("transaction_hash", "unknown")
 
-    # Pass 1
+    # ── Entry filter 1: minimum gain potential ──
+    gain = _compute_gain_potentiel(trade)
+    if gain < MIN_GAIN_POTENTIEL:
+        logger.debug(
+            "Trade %s — FILTERED: gain potentiel $%.0f < $%.0f minimum",
+            tx_hash[:12], gain, MIN_GAIN_POTENTIEL,
+        )
+        return None
+
+    # ── Entry filter 2: public resolution market ──
+    if _is_public_resolution_market(trade):
+        logger.debug(
+            "Trade %s — FILTERED: public resolution market (%s)",
+            tx_hash[:12], trade.get("slug", ""),
+        )
+        return None
+
+    # ── Pass 1 scoring ──
     result = score_pass1(trade)
     logger.debug(
         "Trade %s — Pass 1: %d pts, flags: %s",
@@ -78,7 +158,7 @@ def _process_single_trade(trade: dict[str, Any]) -> dict[str, Any] | None:
         logger.debug("Trade %s — below Pass 1 threshold (%d), skipping", tx_hash[:12], PASS1_THRESHOLD)
         return None
 
-    # Pass 2: profile wallet
+    # ── Profile wallet ──
     wallet = trade.get("proxy_wallet", "")
     logger.info(
         "Trade %s — Pass 1 score %d >= %d, profiling wallet %s...",
@@ -90,7 +170,17 @@ def _process_single_trade(trade: dict[str, Any]) -> dict[str, Any] | None:
 
     wallet_profile = _safe_profile_wallet(wallet)
 
-    # Score Pass 2
+    # ── Entry filter 3: bot/arbitrageur ──
+    if _is_bot_arbitrageur(wallet_profile):
+        logger.info(
+            "Trade %s — FILTERED: bot/arbitrageur pattern (markets=%s, win_loss=%s)",
+            tx_hash[:12],
+            wallet_profile.get("markets_count"),
+            wallet_profile.get("win_loss"),
+        )
+        return None
+
+    # ── Pass 2 scoring ──
     score_pass2(wallet_profile, result)
     logger.info(
         "Trade %s — Total score: %d (P1: %d, P2: %d), flags: %s",
@@ -109,24 +199,24 @@ def _process_single_trade(trade: dict[str, Any]) -> dict[str, Any] | None:
         )
         return None
 
-    # Build and send alert payload
+    # ── Build and send alert payload ──
     payload = _build_payload(trade, result, wallet_profile)
     send_webhook(payload)
     return payload
 
 
 def _safe_profile_wallet(wallet: str) -> dict[str, Any]:
-    """Profile a wallet, returning empty profile on failure."""
+    """Profile a wallet, returning fallback profile on failure."""
     try:
         return build_wallet_profile(wallet)
     except Exception as e:
         logger.error("Wallet profiling failed for %s: %s", wallet, e)
         return {
-            "age_days": None,
-            "tx_count": None,
-            "markets_count": None,
+            "age_days": "non_disponible",
+            "tx_count": "non_disponible",
+            "markets_count": 0,
             "win_loss": None,
-            "funding_source": None,
+            "funding_source": "non_disponible",
             "first_polymarket_trade": None,
         }
 

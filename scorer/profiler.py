@@ -55,14 +55,35 @@ def build_wallet_profile(proxy_wallet: str) -> dict[str, Any]:
         profile["first_polymarket_trade"] = poly_data.get("first_trade_date")
 
     # Source 2: Alchemy (on-chain data)
+    # Ticket #9 diagnostic: age_days, tx_count, funding_source ALL depend on
+    # Alchemy RPC. If ALCHEMY_API_KEY is not set, these 3 fields remain null.
+    # Root cause of 4/4 trades returning null on 13/02: Alchemy key not configured.
     if ALCHEMY_API_KEY:
         onchain = _fetch_onchain_data(proxy_wallet)
         if onchain is not None:
             profile["age_days"] = onchain.get("age_days")
             profile["tx_count"] = onchain.get("tx_count")
             profile["funding_source"] = onchain.get("funding_source")
+        else:
+            logger.warning(
+                "Alchemy on-chain data returned None for %s — "
+                "age_days, tx_count, funding_source will be unavailable",
+                proxy_wallet[:16],
+            )
+            profile["age_days"] = "non_disponible"
+            profile["tx_count"] = "non_disponible"
+            profile["funding_source"] = "non_disponible"
     else:
-        logger.debug("ALCHEMY_API_KEY not set — skipping on-chain profiling")
+        # Ticket #9: elevated to WARNING — this silently disables half the
+        # scoring system (Pass 2 wallet checks for age, tx_count, funding).
+        logger.warning(
+            "ALCHEMY_API_KEY not set — on-chain profiling DISABLED. "
+            "Fields age_days, tx_count, funding_source will be 'non_disponible'. "
+            "Set ALCHEMY_API_KEY in .env to enable full wallet profiling."
+        )
+        profile["age_days"] = "non_disponible"
+        profile["tx_count"] = "non_disponible"
+        profile["funding_source"] = "non_disponible"
 
     return profile
 
@@ -210,6 +231,9 @@ def _fetch_onchain_data(wallet: str) -> dict[str, Any] | None:
     # 2. First inbound transfer (wallet age) + funding source
     transfers = _fetch_inbound_transfers(wallet)
     if transfers:
+        logger.debug(
+            "Alchemy: found %d inbound transfers for %s", len(transfers), wallet[:16]
+        )
         # Earliest transfer = wallet creation proxy
         earliest = transfers[-1]  # Transfers are returned newest-first
         try:
@@ -218,8 +242,13 @@ def _fetch_onchain_data(wallet: str) -> dict[str, Any] | None:
             if block_ts is not None:
                 age_seconds = datetime.now(timezone.utc).timestamp() - block_ts
                 result["age_days"] = max(0, int(age_seconds / 86400))
-        except (ValueError, TypeError):
-            pass
+            else:
+                logger.warning(
+                    "Alchemy: could not get block timestamp for block %s — age_days unavailable",
+                    block_num_hex,
+                )
+        except (ValueError, TypeError) as e:
+            logger.warning("Alchemy: error computing wallet age: %s", e)
 
         # Most recent large transfer = funding source
         latest = transfers[0]
@@ -232,6 +261,14 @@ def _fetch_onchain_data(wallet: str) -> dict[str, Any] | None:
             result["funding_source"] = f"transfer from {from_addr[:10]}... ({value})"
         else:
             result["funding_source"] = f"transfer from {from_addr[:10]}..."
+    else:
+        logger.warning(
+            "Alchemy: no inbound transfers found for %s — "
+            "age_days and funding_source will be null. "
+            "Possible causes: (a) wallet funded via bridge not detected as external/erc20, "
+            "(b) wallet is a contract, (c) Alchemy API issue.",
+            wallet[:16],
+        )
 
     return result
 

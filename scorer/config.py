@@ -24,6 +24,19 @@ TIMING_CLOSE_DAYS = int(os.getenv("TIMING_CLOSE_DAYS", "7"))
 SPIKE_VOLUME_MULTIPLIER = float(os.getenv("SPIKE_VOLUME_MULTIPLIER", "5.0"))
 CONTRE_COURANT_THRESHOLD = float(os.getenv("CONTRE_COURANT_THRESHOLD", "0.30"))
 
+# ── Entry filters (Ticket #8 — anti-noise) ───────────────────────
+MIN_GAIN_POTENTIEL = float(os.getenv("MIN_GAIN_POTENTIEL", "500"))
+BOT_MARKETS_THRESHOLD = int(os.getenv("BOT_MARKETS_THRESHOLD", "30"))
+BOT_WIN_RATE_THRESHOLD = float(os.getenv("BOT_WIN_RATE_THRESHOLD", "0.80"))
+MARCHE_IMPROBABLE_PRICE_CEILING = float(os.getenv("MARCHE_IMPROBABLE_PRICE_CEILING", "0.70"))
+PUBLIC_RESOLUTION_PATTERNS: list[str] = [
+    "price-of",
+    "be-between",
+    "be-less-than",
+    "be-above",
+    "be-greater-than",
+]
+
 # ── Pass 2 parameter thresholds ────────────────────────────────
 WALLET_AGE_NEW_DAYS = int(os.getenv("WALLET_AGE_NEW_DAYS", "7"))
 WALLET_AGE_RECENT_DAYS = int(os.getenv("WALLET_AGE_RECENT_DAYS", "30"))

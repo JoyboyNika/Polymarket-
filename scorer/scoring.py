@@ -16,6 +16,7 @@ from scorer.config import (
     CONTRE_COURANT_THRESHOLD,
     IMPROBABLE_PROBABILITY_THRESHOLD,
     LOW_PRICE_THRESHOLD,
+    MARCHE_IMPROBABLE_PRICE_CEILING,
     MARKET_VOLUME_LOW_THRESHOLD,
     PASS1_WEIGHTS,
     PASS2_WEIGHTS,
@@ -71,9 +72,17 @@ def _check_mise_massive(trade: dict[str, Any], result: ScoringResult) -> None:
 
 
 def _check_marche_improbable(trade: dict[str, Any], result: ScoringResult) -> None:
-    """BUY on highly improbable outcome."""
+    """BUY on highly improbable outcome.
+
+    Ticket #8 fix: if price > MARCHE_IMPROBABLE_PRICE_CEILING (0.70),
+    never trigger this flag regardless of market_probability. High-price
+    trades on low-probability markets are arbitrage, not insider trading.
+    """
     side = (trade.get("side") or "").upper()
     prob = trade.get("market_probability")
+    price = trade.get("price", 0) or 0
+    if price > MARCHE_IMPROBABLE_PRICE_CEILING:
+        return
     if side == "BUY" and prob is not None and prob < IMPROBABLE_PROBABILITY_THRESHOLD:
         result.add_flag(
             "marché_improbable",
@@ -186,7 +195,7 @@ def score_pass1(trade: dict[str, Any]) -> ScoringResult:
 def _check_wallet_neuf(profile: dict[str, Any], result: ScoringResult) -> None:
     """Brand new wallet (< 7 days)."""
     age = profile.get("age_days")
-    if age is not None and age < WALLET_AGE_NEW_DAYS:
+    if age is not None and isinstance(age, (int, float)) and age < WALLET_AGE_NEW_DAYS:
         result.add_flag(
             "wallet_neuf",
             PASS2_WEIGHTS["wallet_neuf"],
@@ -198,7 +207,7 @@ def _check_wallet_neuf(profile: dict[str, Any], result: ScoringResult) -> None:
 def _check_compte_recent(profile: dict[str, Any], result: ScoringResult) -> None:
     """Recent but not brand-new wallet (7-30 days)."""
     age = profile.get("age_days")
-    if age is not None and WALLET_AGE_NEW_DAYS <= age < WALLET_AGE_RECENT_DAYS:
+    if age is not None and isinstance(age, (int, float)) and WALLET_AGE_NEW_DAYS <= age < WALLET_AGE_RECENT_DAYS:
         result.add_flag(
             "compte_récent",
             PASS2_WEIGHTS["compte_récent"],
@@ -210,7 +219,7 @@ def _check_compte_recent(profile: dict[str, Any], result: ScoringResult) -> None
 def _check_peu_tx(profile: dict[str, Any], result: ScoringResult) -> None:
     """Very few on-chain transactions."""
     tx_count = profile.get("tx_count")
-    if tx_count is not None and tx_count < WALLET_FEW_TX_THRESHOLD:
+    if tx_count is not None and isinstance(tx_count, (int, float)) and tx_count < WALLET_FEW_TX_THRESHOLD:
         result.add_flag(
             "peu_tx",
             PASS2_WEIGHTS["peu_tx"],
@@ -244,15 +253,17 @@ def _check_pattern_maduro(profile: dict[str, Any], result: ScoringResult) -> Non
 
 
 def _check_correlation_temporelle(profile: dict[str, Any], result: ScoringResult) -> None:
-    """No resolved trades in history (win/loss unknown)."""
+    """Temporal correlation check.
+
+    Ticket #8 fix: this flag must NOT trigger on absence of data.
+    If win_loss is null or empty, there is simply no resolved trade
+    history — that is not evidence of correlation. The flag is now
+    effectively disabled until real temporal correlation logic
+    (e.g., trade timing vs. information events) is implemented.
+    """
     win_loss = profile.get("win_loss")
-    if win_loss is None or win_loss == "":
-        result.add_flag(
-            "corrélation_temporelle",
-            PASS2_WEIGHTS["corrélation_temporelle"],
-            "No resolved trades in history — W/L unknown",
-            pass_num=2,
-        )
+    if not win_loss:
+        return
 
 
 def _check_financement_suspect(profile: dict[str, Any], result: ScoringResult) -> None:
