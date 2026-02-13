@@ -226,8 +226,8 @@ def _safe_profile_wallet(wallet: str) -> dict[str, Any]:
     except Exception as e:
         logger.error("Wallet profiling failed for %s: %s", wallet, e)
         return {
-            "age_days": "non_disponible",
-            "tx_count": "non_disponible",
+            "age_days": None,
+            "tx_count": None,
             "markets_count": 0,
             "win_loss": None,
             "funding_source": "non_disponible",

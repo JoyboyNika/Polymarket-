@@ -70,19 +70,17 @@ def build_wallet_profile(proxy_wallet: str) -> dict[str, Any]:
                 "age_days, tx_count, funding_source will be unavailable",
                 proxy_wallet[:16],
             )
-            profile["age_days"] = "non_disponible"
-            profile["tx_count"] = "non_disponible"
+            # age_days and tx_count stay None (Notion number fields reject strings)
             profile["funding_source"] = "non_disponible"
     else:
         # Ticket #9: elevated to WARNING — this silently disables half the
         # scoring system (Pass 2 wallet checks for age, tx_count, funding).
         logger.warning(
             "ALCHEMY_API_KEY not set — on-chain profiling DISABLED. "
-            "Fields age_days, tx_count, funding_source will be 'non_disponible'. "
+            "age_days, tx_count will be null, funding_source='non_disponible'. "
             "Set ALCHEMY_API_KEY in .env to enable full wallet profiling."
         )
-        profile["age_days"] = "non_disponible"
-        profile["tx_count"] = "non_disponible"
+        # age_days and tx_count stay None (Notion number fields reject strings)
         profile["funding_source"] = "non_disponible"
 
     return profile

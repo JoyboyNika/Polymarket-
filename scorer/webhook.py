@@ -85,7 +85,7 @@ def build_flat_payload(
 
     # Convert age_days (int | None) → human-readable string
     age_raw = wallet_profile.get("age_days")
-    if age_raw is not None and age_raw != "non_disponible":
+    if age_raw is not None:
         age_days = f"{age_raw} jours"
     else:
         age_days = _FIELD_DEFAULTS["age_days"]
