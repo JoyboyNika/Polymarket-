@@ -19,6 +19,99 @@ from scorer.config import (
 logger = logging.getLogger(__name__)
 
 
+# ── Default values for null-safety (Make IML cannot handle undefined/null) ──
+
+_FIELD_DEFAULTS: dict[str, Any] = {
+    "title": "Sans titre",
+    "score": 0,
+    "montant": 0.0,
+    "price": 0.0,
+    "wallet": "0x0",
+    "condition_id": "N/A",
+    "transaction_hash": "N/A",
+    "market_probability": 0.0,
+    "market_volume_24h": 0.0,
+    "market_end_date": "",
+    "ingested_at": "",
+    "side": "N/A",
+    "flags": [],
+    "flags_detail": "",
+    "age_days": "inconnu",
+    "tx_count": 0,
+    "markets_count": 0,
+    "win_loss": "N/A",
+    "funding_source": "N/A",
+}
+
+
+def _safe(value: Any, default: Any) -> Any:
+    """Return *value* unless it is None, in which case return *default*."""
+    return value if value is not None else default
+
+
+def build_flat_payload(
+    trade: dict[str, Any],
+    scoring_result: Any,
+    wallet_profile: dict[str, Any],
+) -> dict[str, Any]:
+    """Build a flat, null-safe webhook payload for Make.com.
+
+    Every value is guaranteed non-null so that Make IML never resolves
+    a field to ``undefined``.
+
+    Args:
+        trade: Enriched trade dict from Bloc 1.
+        scoring_result: A ScoringResult (or any object with score_total,
+            score_pass1, score_pass2, flags_triggered, flags_detail).
+        wallet_profile: Wallet profile dict from the profiler.
+
+    Returns:
+        A single-level dict with no nested objects and no null values.
+    """
+    # Stringify flags_detail dict → one readable line per flag
+    flags_detail_parts: list[str] = []
+    for flag, detail in (scoring_result.flags_detail or {}).items():
+        evidence = detail.get("evidence", "") if isinstance(detail, dict) else str(detail)
+        flags_detail_parts.append(f"{flag}: {evidence}")
+    flags_detail_str = "\n".join(flags_detail_parts)
+
+    # Convert age_days (int | None) → human-readable string
+    age_raw = wallet_profile.get("age_days")
+    if age_raw is not None:
+        age_days = f"{age_raw} jours"
+    else:
+        age_days = _FIELD_DEFAULTS["age_days"]
+
+    payload: dict[str, Any] = {
+        "title": _safe(trade.get("title"), _FIELD_DEFAULTS["title"]),
+        "score": _safe(scoring_result.score_total, _FIELD_DEFAULTS["score"]),
+        "montant": _safe(trade.get("usdc_size"), _FIELD_DEFAULTS["montant"]),
+        "price": _safe(trade.get("price"), _FIELD_DEFAULTS["price"]),
+        "wallet": _safe(trade.get("proxy_wallet"), _FIELD_DEFAULTS["wallet"]),
+        "condition_id": _safe(trade.get("condition_id"), _FIELD_DEFAULTS["condition_id"]),
+        "transaction_hash": _safe(trade.get("transaction_hash"), _FIELD_DEFAULTS["transaction_hash"]),
+        "market_probability": _safe(trade.get("market_probability"), _FIELD_DEFAULTS["market_probability"]),
+        "market_volume_24h": _safe(trade.get("market_volume_24h"), _FIELD_DEFAULTS["market_volume_24h"]),
+        "market_end_date": _safe(trade.get("market_end_date"), _FIELD_DEFAULTS["market_end_date"]),
+        "ingested_at": _safe(trade.get("ingested_at"), _FIELD_DEFAULTS["ingested_at"]),
+        "side": _safe(trade.get("side"), _FIELD_DEFAULTS["side"]),
+        "flags": _safe(scoring_result.flags_triggered, _FIELD_DEFAULTS["flags"]),
+        "flags_detail": flags_detail_str if flags_detail_str else _FIELD_DEFAULTS["flags_detail"],
+        "age_days": age_days,
+        "tx_count": _safe(wallet_profile.get("tx_count"), _FIELD_DEFAULTS["tx_count"]),
+        "markets_count": _safe(wallet_profile.get("markets_count"), _FIELD_DEFAULTS["markets_count"]),
+        "win_loss": _safe(wallet_profile.get("win_loss"), _FIELD_DEFAULTS["win_loss"]),
+        "funding_source": _safe(wallet_profile.get("funding_source"), _FIELD_DEFAULTS["funding_source"]),
+    }
+
+    # Belt-and-suspenders: replace any remaining None with field default
+    for key, value in payload.items():
+        if value is None:
+            payload[key] = _FIELD_DEFAULTS.get(key, "")
+
+    return payload
+
+
 def send_webhook(payload: dict[str, Any]) -> bool:
     """Send a suspect trade payload to the Make webhook.
 
@@ -70,7 +163,7 @@ def _save_fallback(payload: dict[str, Any]) -> None:
     """
     os.makedirs(FALLBACK_DIR, exist_ok=True)
     ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
-    tx_hash = payload.get("trade", {}).get("transaction_hash", "unknown")[:16]
+    tx_hash = payload.get("transaction_hash", "unknown")[:16]
     filename = f"suspect_{ts}_{tx_hash}.json"
     filepath = os.path.join(FALLBACK_DIR, filename)
 
