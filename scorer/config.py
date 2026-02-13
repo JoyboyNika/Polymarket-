@@ -71,6 +71,7 @@ PASS2_WEIGHTS: dict[str, int] = {
 MAKE_WEBHOOK_URL = os.getenv("MAKE_WEBHOOK_URL", "")
 WEBHOOK_TIMEOUT = int(os.getenv("WEBHOOK_TIMEOUT", "15"))
 WEBHOOK_RETRY_DELAY = int(os.getenv("WEBHOOK_RETRY_DELAY", "5"))
+WEBHOOK_SEQUENTIAL_DELAY = int(os.getenv("WEBHOOK_SEQUENTIAL_DELAY", "5"))
 
 # ── Alchemy ────────────────────────────────────────────────────
 ALCHEMY_API_KEY = os.getenv("ALCHEMY_API_KEY", "")

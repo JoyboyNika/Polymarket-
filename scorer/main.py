@@ -12,6 +12,7 @@ Usage (standalone test):
 import json
 import logging
 import re
+import time
 from typing import Any
 
 from scorer.config import (
@@ -21,6 +22,7 @@ from scorer.config import (
     PASS1_THRESHOLD,
     PASS2_THRESHOLD,
     PUBLIC_RESOLUTION_PATTERNS,
+    WEBHOOK_SEQUENTIAL_DELAY,
 )
 from scorer.profiler import build_wallet_profile
 from scorer.scoring import ScoringResult, score_pass1, score_pass2
@@ -46,12 +48,24 @@ def process_enriched_trades(trades: list[dict[str, Any]]) -> list[dict[str, Any]
         List of suspect trade payloads that were sent (or attempted).
     """
     suspects = []
+    webhooks_sent = 0
 
     for trade in trades:
         try:
             result = _process_single_trade(trade)
             if result is not None:
                 suspects.append(result)
+                webhooks_sent += 1
+                # Ticket #10: space out webhook sends to avoid Anthropic
+                # rate limits on the Make→Haiku path.  Sleep *after* each
+                # webhook so the next one fires ≥5s later.
+                if WEBHOOK_SEQUENTIAL_DELAY > 0:
+                    logger.info(
+                        "Webhook %d sent — waiting %ds before next (rate-limit guard)",
+                        webhooks_sent,
+                        WEBHOOK_SEQUENTIAL_DELAY,
+                    )
+                    time.sleep(WEBHOOK_SEQUENTIAL_DELAY)
         except Exception as e:
             tx_hash = trade.get("transaction_hash", "unknown")
             logger.error("Failed to score trade %s: %s", tx_hash, e, exc_info=True)
