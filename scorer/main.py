@@ -18,7 +18,10 @@ from typing import Any
 from scorer.config import (
     BOT_MARKETS_THRESHOLD,
     BOT_WIN_RATE_THRESHOLD,
+    CRYPTO_MARKET_PATTERNS,
     MIN_GAIN_POTENTIEL,
+    MIN_USDC_CRYPTO,
+    MIN_USDC_DEFAULT,
     PASS1_THRESHOLD,
     PASS2_THRESHOLD,
     PUBLIC_RESOLUTION_PATTERNS,
@@ -96,6 +99,23 @@ def _is_public_resolution_market(trade: dict[str, Any]) -> bool:
     return any(pattern in text for pattern in PUBLIC_RESOLUTION_PATTERNS)
 
 
+def _is_crypto_market(trade: dict[str, Any]) -> bool:
+    """Check if market is a crypto/indices 'Up or Down' style market."""
+    title = (trade.get("title") or "").lower()
+    return any(pattern in title for pattern in CRYPTO_MARKET_PATTERNS)
+
+
+def _get_min_usdc_threshold(trade: dict[str, Any]) -> float:
+    """Return the applicable minimum USDC threshold for this trade.
+
+    Crypto/indices markets: MIN_USDC_CRYPTO (default 10,000)
+    All other markets:      MIN_USDC_DEFAULT (default 1,500)
+    """
+    if _is_crypto_market(trade):
+        return MIN_USDC_CRYPTO
+    return MIN_USDC_DEFAULT
+
+
 def _parse_win_rate(win_loss: str | None) -> float | None:
     """Parse win rate from 'XW/YL' string. Returns None if unparseable."""
     if not win_loss:
@@ -128,14 +148,15 @@ def _is_bot_arbitrageur(wallet_profile: dict[str, Any]) -> bool:
 def _process_single_trade(trade: dict[str, Any]) -> dict[str, Any] | None:
     """Process a single trade through the full scoring pipeline.
 
-    Pipeline order (Ticket #8):
+    Pipeline order (Ticket #8 + crypto noise filter):
     1. Entry filter: gain potentiel minimum ($500)
     2. Entry filter: public resolution market
-    3. Pass 1 scoring (trade + market)
-    4. If Pass 1 >= threshold: profile wallet
-    5. Entry filter: bot/arbitrageur (needs wallet data)
-    6. Pass 2 scoring (wallet characteristics)
-    7. If total >= threshold: build payload + send webhook
+    3. Entry filter: differentiated USDC threshold (crypto 10k / default 1.5k)
+    4. Pass 1 scoring (trade + market)
+    5. If Pass 1 >= threshold: profile wallet
+    6. Entry filter: bot/arbitrageur (needs wallet data)
+    7. Pass 2 scoring (wallet characteristics)
+    8. If total >= threshold: build payload + send webhook
 
     Returns:
         Suspect payload dict if the trade is suspect, None otherwise.
@@ -156,6 +177,19 @@ def _process_single_trade(trade: dict[str, Any]) -> dict[str, Any] | None:
         logger.debug(
             "Trade %s — FILTERED: public resolution market (%s)",
             tx_hash[:12], trade.get("slug", ""),
+        )
+        return None
+
+    # ── Entry filter 3: differentiated USDC threshold ──
+    usdc_size = trade.get("usdc_size") or 0
+    min_usdc = _get_min_usdc_threshold(trade)
+    if usdc_size < min_usdc:
+        logger.debug(
+            "Trade %s — FILTERED: usdc_size $%.0f < $%.0f minimum (%s)",
+            tx_hash[:12],
+            usdc_size,
+            min_usdc,
+            "crypto/indices" if _is_crypto_market(trade) else "default",
         )
         return None
 
@@ -184,7 +218,7 @@ def _process_single_trade(trade: dict[str, Any]) -> dict[str, Any] | None:
 
     wallet_profile = _safe_profile_wallet(wallet)
 
-    # ── Entry filter 3: bot/arbitrageur ──
+    # ── Entry filter 4: bot/arbitrageur ──
     if _is_bot_arbitrageur(wallet_profile):
         logger.info(
             "Trade %s — FILTERED: bot/arbitrageur pattern (markets=%s, win_loss=%s)",

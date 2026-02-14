@@ -37,6 +37,20 @@ PUBLIC_RESOLUTION_PATTERNS: list[str] = [
     "be-greater-than",
 ]
 
+# ── Differentiated USDC thresholds (Ticket: crypto noise filter) ──
+# Crypto/indices "Up or Down" markets generate high-volume low-value noise.
+# Apply a much higher USDC threshold to filter them out.
+CRYPTO_MARKET_PATTERNS: list[str] = [
+    "up or down",
+    "up/down",
+    "bitcoin",
+    "ethereum",
+    "nasdaq",
+    "s&p",
+]
+MIN_USDC_CRYPTO = float(os.getenv("MIN_USDC_CRYPTO", "10000"))
+MIN_USDC_DEFAULT = float(os.getenv("MIN_USDC_DEFAULT", "1500"))
+
 # ── Pass 2 parameter thresholds ────────────────────────────────
 WALLET_AGE_NEW_DAYS = int(os.getenv("WALLET_AGE_NEW_DAYS", "7"))
 WALLET_AGE_RECENT_DAYS = int(os.getenv("WALLET_AGE_RECENT_DAYS", "30"))
