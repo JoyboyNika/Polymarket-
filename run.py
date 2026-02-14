@@ -25,8 +25,16 @@ from ingestor.client import fetch_all_recent_trades, fetch_trades
 from ingestor.config import FILTER_AMOUNT_USDC, POLL_INTERVAL_SECONDS
 from ingestor.dedup import DedupTracker
 from ingestor.enrichment import clear_market_cache, enrich_trade
-from scorer.config import MAKE_WEBHOOK_URL, PASS1_THRESHOLD, PASS2_THRESHOLD
+from scorer.aggregator import AggregationTracker
+from scorer.config import (
+    ALERT_THRESHOLD_CRYPTO,
+    ALERT_THRESHOLD_STANDARD,
+    MAKE_WEBHOOK_URL,
+    PASS1_THRESHOLD,
+    PASS2_THRESHOLD,
+)
 from scorer.main import process_enriched_trades
+from scorer.market_classifier import classify_market, get_alert_threshold
 from scorer.scoring import score_pass1, score_trade
 from scorer.webhook import build_flat_payload, send_webhook
 
@@ -136,19 +144,44 @@ def mode_dry_run() -> None:
     print(f"Enriched {len(enriched)} trades with market context")
     print()
 
-    # 3. Score Pass 1 (no wallet profiling, no webhook)
-    pass1_passed = []
+    # 3. Classify and filter by category threshold
+    crypto_count = 0
+    standard_count = 0
+    filtered_by_threshold = 0
+    above_threshold = []
     for trade in enriched:
+        category = classify_market(trade)
+        threshold = get_alert_threshold(trade)
+        trade["_market_category"] = category
+        trade["_alert_threshold"] = threshold
+        usdc_size = trade.get("usdc_size") or 0
+        if category == "crypto":
+            crypto_count += 1
+        else:
+            standard_count += 1
+        if usdc_size >= threshold:
+            above_threshold.append(trade)
+        else:
+            filtered_by_threshold += 1
+
+    print(f"Category breakdown: {crypto_count} crypto/indices, {standard_count} standard")
+    print(f"Threshold filter: {len(above_threshold)} above threshold, {filtered_by_threshold} filtered out")
+    print(f"  (crypto >= ${ALERT_THRESHOLD_CRYPTO:,}, standard >= ${ALERT_THRESHOLD_STANDARD:,})")
+    print()
+
+    # 4. Score Pass 1 (no wallet profiling, no webhook)
+    pass1_passed = []
+    for trade in above_threshold:
         result = score_pass1(trade)
         trade["_score_pass1"] = result.score_pass1
         trade["_flags_pass1"] = result.flags_triggered
         if result.score_pass1 >= PASS1_THRESHOLD:
             pass1_passed.append(trade)
 
-    print(f"Pass 1 results: {len(pass1_passed)}/{len(enriched)} trades >= {PASS1_THRESHOLD} pts")
+    print(f"Pass 1 results: {len(pass1_passed)}/{len(above_threshold)} trades >= {PASS1_THRESHOLD} pts")
     print()
 
-    # 4. Show details
+    # 5. Show details
     if pass1_passed:
         print("Trades passing Pass 1:")
         print("-" * 60)
@@ -160,6 +193,7 @@ def mode_dry_run() -> None:
             vol = t.get('market_volume_24h')
             vol_str = f"{vol:,.0f}" if vol is not None else "N/A"
             print(f"    Market prob: {prob_str} | Volume 24h: {vol_str} USDC")
+            print(f"    Category: {t['_market_category']} (threshold: ${t['_alert_threshold']:,})")
             print(f"    Pass 1 score: {t['_score_pass1']} pts | Flags: {t['_flags_pass1']}")
             print(f"    Wallet: {t['proxy_wallet'][:16]}...")
             print()
@@ -168,14 +202,18 @@ def mode_dry_run() -> None:
         print("(This is normal if all recent trades are from established whales)")
         print()
 
-    # 5. Summary
+    # 6. Summary
     print("=" * 60)
     print("SUMMARY")
     print("=" * 60)
-    print(f"  Trades fetched:    {len(raw_trades)}")
-    print(f"  Trades enriched:   {len(enriched)}")
-    print(f"  Pass 1 (>= {PASS1_THRESHOLD} pts): {len(pass1_passed)}")
-    print(f"  Webhook calls:     0 (dry run)")
+    print(f"  Trades fetched:       {len(raw_trades)}")
+    print(f"  Trades enriched:      {len(enriched)}")
+    print(f"  Crypto/indices:       {crypto_count} (threshold: ${ALERT_THRESHOLD_CRYPTO:,})")
+    print(f"  Standard:             {standard_count} (threshold: ${ALERT_THRESHOLD_STANDARD:,})")
+    print(f"  Filtered (< thresh):  {filtered_by_threshold}")
+    print(f"  Above threshold:      {len(above_threshold)}")
+    print(f"  Pass 1 (>= {PASS1_THRESHOLD} pts):    {len(pass1_passed)}")
+    print(f"  Webhook calls:        0 (dry run)")
     print()
     print("In production mode, trades passing Pass 1 would trigger")
     print("wallet profiling (Pass 2) and potential webhook alerts.")
@@ -202,6 +240,11 @@ def mode_production() -> None:
         PASS1_THRESHOLD,
         PASS2_THRESHOLD,
     )
+    logger.info(
+        "Alert thresholds: standard=$%d, crypto=$%d",
+        ALERT_THRESHOLD_STANDARD,
+        ALERT_THRESHOLD_CRYPTO,
+    )
     logger.info("Webhook: %s", MAKE_WEBHOOK_URL[:50] + "..." if MAKE_WEBHOOK_URL else "NOT SET")
 
     # Seed dedup
@@ -214,6 +257,9 @@ def mode_production() -> None:
     except Exception as e:
         logger.error("Failed to seed dedup tracker: %s", e)
         logger.info("Starting with empty dedup set")
+
+    # Aggregation tracker (persists across cycles within the same run)
+    agg_tracker = AggregationTracker()
 
     # Main loop
     while True:
@@ -253,13 +299,14 @@ def mode_production() -> None:
                     except Exception as e:
                         logger.error("Failed to enrich trade: %s", e)
 
-                # Bloc 2: score + profile + webhook
+                # Bloc 2: score + profile + webhook (with aggregation)
                 if enriched:
                     logger.info("Passing %d trades to Bloc 2", len(enriched))
-                    process_enriched_trades(enriched)
+                    process_enriched_trades(enriched, aggregation_tracker=agg_tracker)
 
             # Cleanup
             tracker.purge_expired()
+            agg_tracker.purge_expired()
 
         except KeyboardInterrupt:
             logger.info("Interrupted — shutting down")
@@ -268,9 +315,10 @@ def mode_production() -> None:
             logger.error("Unexpected error in cycle: %s", e, exc_info=True)
 
         logger.info(
-            "Sleeping %ds (dedup set: %d hashes)",
+            "Sleeping %ds (dedup set: %d hashes, agg buckets: %d)",
             POLL_INTERVAL_SECONDS,
             tracker.size,
+            agg_tracker.bucket_count,
         )
         try:
             time.sleep(POLL_INTERVAL_SECONDS)

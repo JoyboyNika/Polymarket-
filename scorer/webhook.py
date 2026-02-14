@@ -45,6 +45,8 @@ _FIELD_DEFAULTS: dict[str, Any] = {
     "markets_count": 0,
     "win_loss": "N/A",
     "funding_source": "N/A",
+    "market_category": "standard",
+    "alert_threshold": 4000,
 }
 
 
@@ -193,3 +195,27 @@ def _save_fallback(payload: dict[str, Any]) -> None:
         logger.info("Payload saved to %s", filepath)
     except OSError as e:
         logger.error("Failed to save fallback file: %s", e)
+
+
+def send_aggregated_webhook(alert: dict[str, Any]) -> bool:
+    """Send an aggregated funder alert to the Make webhook.
+
+    The alert dict comes from AggregationTracker._build_alert() and
+    contains: alert_type, funder, condition_id, market_title,
+    market_category, total_volume, alert_threshold, wallet_count,
+    trade_count, wallets, transactions.
+
+    Args:
+        alert: Aggregated alert dict.
+
+    Returns:
+        True if the webhook succeeded, False otherwise.
+    """
+    logger.info(
+        "Sending AGGREGATED alert: funder=%s market=%s volume=%.0f (%d wallets)",
+        alert.get("funder", "?")[:30],
+        alert.get("market_title", "?")[:40],
+        alert.get("total_volume", 0),
+        alert.get("wallet_count", 0),
+    )
+    return send_webhook(alert)
