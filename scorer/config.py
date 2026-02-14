@@ -37,6 +37,26 @@ PUBLIC_RESOLUTION_PATTERNS: list[str] = [
     "be-greater-than",
 ]
 
+# ── Category-based alert thresholds (Forensic Carmin 13-14 Feb 2026) ──
+ALERT_THRESHOLD_STANDARD = int(os.getenv("ALERT_THRESHOLD_STANDARD", "4000"))
+ALERT_THRESHOLD_CRYPTO = int(os.getenv("ALERT_THRESHOLD_CRYPTO", "10000"))
+
+# Keywords that classify a market as crypto/indices (case-insensitive match
+# against market title and slug).
+CRYPTO_KEYWORDS: list[str] = [
+    "bitcoin", "btc",
+    "ethereum", "eth",
+    "solana", "sol",
+    "xrp",
+    "up or down",
+    "s&p 500", "spx",
+    "nasdaq", "ndx",
+    "price of bitcoin", "price of ethereum", "price of solana", "price of xrp",
+]
+
+# ── Funder aggregation ────────────────────────────────────────────
+AGGREGATION_WINDOW_HOURS = int(os.getenv("AGGREGATION_WINDOW_HOURS", "24"))
+
 # ── Pass 2 parameter thresholds ────────────────────────────────
 WALLET_AGE_NEW_DAYS = int(os.getenv("WALLET_AGE_NEW_DAYS", "7"))
 WALLET_AGE_RECENT_DAYS = int(os.getenv("WALLET_AGE_RECENT_DAYS", "30"))

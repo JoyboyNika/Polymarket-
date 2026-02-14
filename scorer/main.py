@@ -15,6 +15,7 @@ import re
 import time
 from typing import Any
 
+from scorer.aggregator import AggregationTracker
 from scorer.config import (
     BOT_MARKETS_THRESHOLD,
     BOT_WIN_RATE_THRESHOLD,
@@ -24,25 +25,34 @@ from scorer.config import (
     PUBLIC_RESOLUTION_PATTERNS,
     WEBHOOK_SEQUENTIAL_DELAY,
 )
+from scorer.market_classifier import classify_market, get_alert_threshold
 from scorer.profiler import build_wallet_profile
 from scorer.scoring import ScoringResult, score_pass1, score_pass2
-from scorer.webhook import build_flat_payload, send_webhook
+from scorer.webhook import build_flat_payload, send_aggregated_webhook, send_webhook
 
 logger = logging.getLogger(__name__)
 
 
-def process_enriched_trades(trades: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def process_enriched_trades(
+    trades: list[dict[str, Any]],
+    aggregation_tracker: AggregationTracker | None = None,
+) -> list[dict[str, Any]]:
     """Score a batch of enriched trades from Bloc 1.
 
     This is the main entry point called by the ingestor's process_trades().
 
     For each trade:
+    0. Category filter: skip if usdc_size < category threshold
     1. Pass 1: score trade+market (no external calls)
     2. If score >= PASS1_THRESHOLD: profile wallet + Pass 2
     3. If total score >= PASS2_THRESHOLD: build payload + send webhook
+    4. Feed trade to aggregation tracker for funder-level split detection
 
     Args:
         trades: List of enriched trade dicts from Bloc 1.
+        aggregation_tracker: Optional tracker for funder×market aggregation.
+            When provided, sub-threshold trades are still fed to the tracker
+            so that split trades can be detected.
 
     Returns:
         List of suspect trade payloads that were sent (or attempted).
@@ -52,7 +62,7 @@ def process_enriched_trades(trades: list[dict[str, Any]]) -> list[dict[str, Any]
 
     for trade in trades:
         try:
-            result = _process_single_trade(trade)
+            result = _process_single_trade(trade, aggregation_tracker)
             if result is not None:
                 suspects.append(result)
                 webhooks_sent += 1
@@ -125,22 +135,43 @@ def _is_bot_arbitrageur(wallet_profile: dict[str, Any]) -> bool:
     return win_rate > BOT_WIN_RATE_THRESHOLD
 
 
-def _process_single_trade(trade: dict[str, Any]) -> dict[str, Any] | None:
+def _process_single_trade(
+    trade: dict[str, Any],
+    aggregation_tracker: AggregationTracker | None = None,
+) -> dict[str, Any] | None:
     """Process a single trade through the full scoring pipeline.
 
-    Pipeline order (Ticket #8):
+    Pipeline order (Ticket #8 + Forensic Carmin Feb 2026):
+    0. Category filter: usdc_size vs category threshold (crypto $10K / standard $4K)
     1. Entry filter: gain potentiel minimum ($500)
     2. Entry filter: public resolution market
     3. Pass 1 scoring (trade + market)
     4. If Pass 1 >= threshold: profile wallet
-    5. Entry filter: bot/arbitrageur (needs wallet data)
-    6. Pass 2 scoring (wallet characteristics)
-    7. If total >= threshold: build payload + send webhook
+    5. Feed trade to aggregation tracker (even sub-threshold trades)
+    6. Entry filter: bot/arbitrageur (needs wallet data)
+    7. Pass 2 scoring (wallet characteristics)
+    8. If total >= threshold: build payload + send webhook
 
     Returns:
         Suspect payload dict if the trade is suspect, None otherwise.
     """
     tx_hash = trade.get("transaction_hash", "unknown")
+    usdc_size = trade.get("usdc_size") or 0
+
+    # ── Entry filter 0: category-based amount threshold ──
+    market_category = classify_market(trade)
+    alert_threshold = get_alert_threshold(trade)
+    if usdc_size < alert_threshold:
+        logger.debug(
+            "Trade %s — FILTERED: %.0f USDC < %d threshold (%s category)",
+            tx_hash[:12], usdc_size, alert_threshold, market_category,
+        )
+        # Sub-threshold trades still feed the aggregation tracker so that
+        # split trades across multiple wallets from the same funder can
+        # be detected when their combined volume crosses the threshold.
+        if aggregation_tracker is not None:
+            _feed_aggregation_sub_threshold(trade, aggregation_tracker)
+        return None
 
     # ── Entry filter 1: minimum gain potential ──
     gain = _compute_gain_potentiel(trade)
@@ -184,6 +215,12 @@ def _process_single_trade(trade: dict[str, Any]) -> dict[str, Any] | None:
 
     wallet_profile = _safe_profile_wallet(wallet)
 
+    # ── Feed aggregation tracker (above-threshold trades too) ──
+    if aggregation_tracker is not None:
+        agg_alert = aggregation_tracker.add_trade(trade, wallet_profile)
+        if agg_alert is not None:
+            send_aggregated_webhook(agg_alert)
+
     # ── Entry filter 3: bot/arbitrageur ──
     if _is_bot_arbitrageur(wallet_profile):
         logger.info(
@@ -197,12 +234,13 @@ def _process_single_trade(trade: dict[str, Any]) -> dict[str, Any] | None:
     # ── Pass 2 scoring ──
     score_pass2(wallet_profile, result)
     logger.info(
-        "Trade %s — Total score: %d (P1: %d, P2: %d), flags: %s",
+        "Trade %s — Total score: %d (P1: %d, P2: %d), flags: %s [%s]",
         tx_hash[:12],
         result.score_total,
         result.score_pass1,
         result.score_pass2,
         result.flags_triggered,
+        market_category,
     )
 
     if result.score_total < PASS2_THRESHOLD:
@@ -215,6 +253,8 @@ def _process_single_trade(trade: dict[str, Any]) -> dict[str, Any] | None:
 
     # ── Build and send alert payload ──
     payload = _build_payload(trade, result, wallet_profile)
+    payload["market_category"] = market_category
+    payload["alert_threshold"] = alert_threshold
     send_webhook(payload)
     return payload
 
@@ -233,6 +273,26 @@ def _safe_profile_wallet(wallet: str) -> dict[str, Any]:
             "funding_source": "non_disponible",
             "first_polymarket_trade": None,
         }
+
+
+def _feed_aggregation_sub_threshold(
+    trade: dict[str, Any],
+    aggregation_tracker: AggregationTracker,
+) -> None:
+    """Profile a sub-threshold trade's wallet and feed the aggregation tracker.
+
+    Sub-threshold trades (below the category amount filter) are still
+    interesting for aggregation: a funder may split a $12K trade into
+    4 x $3K across different wallets. We profile the wallet to get the
+    funding_source, then feed it to the aggregation tracker.
+    """
+    wallet = trade.get("proxy_wallet", "")
+    if not wallet:
+        return
+    wallet_profile = _safe_profile_wallet(wallet)
+    agg_alert = aggregation_tracker.add_trade(trade, wallet_profile)
+    if agg_alert is not None:
+        send_aggregated_webhook(agg_alert)
 
 
 def _build_payload(
