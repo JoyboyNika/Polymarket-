@@ -200,22 +200,86 @@ def _save_fallback(payload: dict[str, Any]) -> None:
 def send_aggregated_webhook(alert: dict[str, Any]) -> bool:
     """Send an aggregated funder alert to the Make webhook.
 
-    The alert dict comes from AggregationTracker._build_alert() and
-    contains: alert_type, funder, condition_id, market_title,
-    market_category, total_volume, alert_threshold, wallet_count,
-    trade_count, wallets, transactions.
+    Builds a payload compatible with the build_flat_payload format so that
+    Make/Haiku can generate a complete fiche from an aggregated alert.
+
+    Mapping from aggregator fields → flat payload fields:
+        market_title   → title
+        total_volume   → montant
+        funder         → funding_source
+        wallets        → wallet
+        condition_id   → condition_id
+        market_category→ market_category
+        alert_threshold→ alert_threshold
+        trade_count, wallet_count, transactions → flags_detail
 
     Args:
-        alert: Aggregated alert dict.
+        alert: Aggregated alert dict from AggregationTracker._build_alert().
 
     Returns:
         True if the webhook succeeded, False otherwise.
     """
+    wallet_count = alert.get("wallet_count", 0)
+    trade_count = alert.get("trade_count", 0)
+    total_volume = alert.get("total_volume", 0)
+    funder = alert.get("funder", "N/A")
+    wallets_str = alert.get("wallets", "")
+    transactions_str = alert.get("transactions", "")
+    market_category = alert.get("market_category", _FIELD_DEFAULTS["market_category"])
+    alert_threshold = alert.get("alert_threshold", _FIELD_DEFAULTS["alert_threshold"])
+
+    # Build flags_detail with aggregation evidence
+    detail_lines = [
+        f"alerte_agrégée: Volume agrégé {total_volume:.0f} USDC "
+        f"via {wallet_count} wallet(s) / {trade_count} trade(s) "
+        f"depuis le même financeur",
+        f"financeur: {funder}",
+        f"wallets: {wallets_str}",
+        f"transactions: {transactions_str}",
+    ]
+    flags_detail_str = "\n".join(detail_lines)
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    payload: dict[str, Any] = {
+        "title": _safe(alert.get("market_title"), _FIELD_DEFAULTS["title"]),
+        "slug": _FIELD_DEFAULTS["slug"],
+        "score": 0,
+        "score_pass1": 0,
+        "score_pass2": 0,
+        "montant": round(total_volume, 2),
+        "price": _FIELD_DEFAULTS["price"],
+        "gain_potentiel": _FIELD_DEFAULTS["gain_potentiel"],
+        "wallet": wallets_str if wallets_str else _FIELD_DEFAULTS["wallet"],
+        "condition_id": _safe(alert.get("condition_id"), _FIELD_DEFAULTS["condition_id"]),
+        "transaction_hash": transactions_str if transactions_str else _FIELD_DEFAULTS["transaction_hash"],
+        "market_probability": _FIELD_DEFAULTS["market_probability"],
+        "market_volume_24h": _FIELD_DEFAULTS["market_volume_24h"],
+        "market_end_date": _FIELD_DEFAULTS["market_end_date"],
+        "ingested_at": now_iso,
+        "side": _FIELD_DEFAULTS["side"],
+        "flags": "alerte_agrégée",
+        "flags_detail": flags_detail_str,
+        "age_days": _FIELD_DEFAULTS["age_days"],
+        "tx_count": trade_count,
+        "markets_count": _FIELD_DEFAULTS["markets_count"],
+        "win_loss": _FIELD_DEFAULTS["win_loss"],
+        "funding_source": funder if funder else _FIELD_DEFAULTS["funding_source"],
+        "market_category": market_category,
+        "alert_threshold": alert_threshold,
+    }
+
+    # Belt-and-suspenders: no None values
+    for key, value in payload.items():
+        if value is None:
+            payload[key] = _FIELD_DEFAULTS.get(key, "")
+
     logger.info(
-        "Sending AGGREGATED alert: funder=%s market=%s volume=%.0f (%d wallets)",
-        alert.get("funder", "?")[:30],
+        "Sending AGGREGATED alert: funder=%s market=%s volume=%.0f (%d wallets, %d trades)",
+        funder[:30],
         alert.get("market_title", "?")[:40],
-        alert.get("total_volume", 0),
-        alert.get("wallet_count", 0),
+        total_volume,
+        wallet_count,
+        trade_count,
     )
-    return send_webhook(alert)
+    return send_webhook(payload)
