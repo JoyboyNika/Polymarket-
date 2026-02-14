@@ -97,6 +97,11 @@ WEBHOOK_SEQUENTIAL_DELAY = int(os.getenv("WEBHOOK_SEQUENTIAL_DELAY", "5"))
 ALCHEMY_API_KEY = os.getenv("ALCHEMY_API_KEY", "")
 ALCHEMY_NETWORK = os.getenv("ALCHEMY_NETWORK", "polygon-mainnet")
 
+# ── CLOB API (outcome side resolution) ────────────────────────
+CLOB_API_URL = os.getenv("CLOB_API_URL", "https://clob.polymarket.com").rstrip("/")
+# Polymarket CTF (Conditional Token Framework) contract on Polygon
+CTF_CONTRACT_ADDRESS = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"
+
 # ── API (reuse from ingestor) ──────────────────────────────────
 API_BASE_URL = os.getenv("API_BASE_URL", "https://data-api.polymarket.com").rstrip("/")
 REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "30"))

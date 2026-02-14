@@ -28,6 +28,7 @@ from scorer.config import (
 from scorer.market_classifier import classify_market, get_alert_threshold
 from scorer.profiler import build_wallet_profile
 from scorer.scoring import ScoringResult, score_pass1, score_pass2
+from scorer.side_resolver import resolve_outcome_side
 from scorer.webhook import build_flat_payload, send_aggregated_webhook, send_webhook
 
 logger = logging.getLogger(__name__)
@@ -250,6 +251,14 @@ def _process_single_trade(
             PASS2_THRESHOLD,
         )
         return None
+
+    # ── Resolve outcome side (YES / NO / UNKNOWN) ──
+    outcome_side = resolve_outcome_side(
+        condition_id=trade.get("condition_id", ""),
+        tx_hash=trade.get("transaction_hash", ""),
+        proxy_wallet=wallet,
+    )
+    trade["outcome_side"] = outcome_side
 
     # ── Build and send alert payload ──
     payload = _build_payload(trade, result, wallet_profile)

@@ -26,6 +26,7 @@ from ingestor.config import FILTER_AMOUNT_USDC, POLL_INTERVAL_SECONDS
 from ingestor.dedup import DedupTracker
 from ingestor.enrichment import clear_market_cache, enrich_trade
 from scorer.aggregator import AggregationTracker
+from scorer.side_resolver import clear_clob_cache
 from scorer.config import (
     ALERT_THRESHOLD_CRYPTO,
     ALERT_THRESHOLD_STANDARD,
@@ -134,6 +135,7 @@ def mode_dry_run() -> None:
 
     # 2. Enrich
     clear_market_cache()
+    clear_clob_cache()
     enriched = []
     for trade in raw_trades:
         try:
@@ -292,6 +294,7 @@ def mode_production() -> None:
             if new_trades:
                 # Enrich
                 clear_market_cache()
+                clear_clob_cache()
                 enriched = []
                 for trade in new_trades:
                     try:
